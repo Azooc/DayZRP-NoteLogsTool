@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Note Log Viewer</title>
+<style>
+  :root{--bg:#0f1720;--panel:#0b1220;--muted:#9aa4b2;--accent:#7dd3fc;--ok:#0f3}
+  html,body{height:100%;margin:0;font-family:Inter,ui-sans-serif,system-ui,Segoe UI,Roboto,"Helvetica Neue",Arial}
+  body{background:linear-gradient(180deg,#071021 0%,var(--bg) 100%);color:#e6eef6;display:flex;flex-direction:column;align-items:center;padding:28px;transition:background 220ms ease}
+  body.caught-up{background:linear-gradient(180deg,#063 0%, #0b4 60%, #0a3 100%)}
+  .wrap{width:min(1100px,95%);max-width:1100px}
+  header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:18px}
+  h1{margin:0;font-size:1.25rem}
+  .controls{display:flex;gap:8px;align-items:center}
+  input[type=file]{display:none}
+  .btn{background:transparent;border:1px solid rgba(255,255,255,0.06);padding:10px 12px;border-radius:8px;cursor:pointer;color:inherit}
+  .drop{border:2px dashed rgba(255,255,255,0.04);padding:18px;border-radius:10px;background:linear-gradient(180deg,rgba(255,255,255,0.01),transparent);text-align:center;margin-bottom:12px}
+  .drop.drag{border-color:var(--accent);box-shadow:0 6px 18px rgba(0,0,0,0.6)}
+  .meta{display:flex;gap:12px;align-items:center;margin-bottom:10px}
+  .panel{background:var(--panel);padding:18px;border-radius:10px;border:1px solid rgba(255,255,255,0.03)}
+  .entry{min-height:220px;display:flex;flex-direction:column;gap:8px}
+  .timestamp{color:var(--muted);font-size:0.95rem}
+  .name{font-weight:700;color:var(--accent)}
+  .coords{color:var(--muted);font-size:0.95rem}
+  pre.message{white-space:pre-wrap;margin:0;padding:12px;border-radius:8px;background:linear-gradient(180deg,rgba(255,255,255,0.01),transparent);overflow:auto}
+  .nav{display:flex;gap:8px;align-items:center;margin-top:12px}
+  .small{font-size:0.9rem;color:var(--muted)}
+  .search{padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.04);background:transparent;color:inherit}
+  .inline-controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .inline-controls .group{display:flex;gap:8px;align-items:center}
+  .clear-btn{border:1px solid rgba(255,255,255,0.06);background:transparent;border-radius:8px;padding:8px 10px;cursor:pointer;color:inherit}
+  .caughtup-banner{display:none;position:sticky;top:0;z-index:10;margin-bottom:12px}
+  .caughtup-banner.show{display:block}
+  .banner{background:rgba(0,255,120,0.15);border:1px solid rgba(0,255,120,0.35);color:#d6ffe6;padding:10px 12px;border-radius:10px}
+  footer{margin-top:14px;color:var(--muted);font-size:0.85rem}
+  @media (max-width:900px){
+    .meta{flex-direction:column;align-items:stretch}
+    .inline-controls{flex-direction:column;align-items:stretch}
+  }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>Note Log Viewer</h1>
+      <div class="controls">
+        <label class="btn" id="chooseFileBtn">📁 Upload note log</label>
+        <input id="fileInput" type="file" accept=".txt,.log"/>
+      </div>
+    </header>
+
+    <div id="dropZone" class="drop panel">
+      Drag & drop a logfile here — or click <strong>Upload log</strong>. Use ← / → or ↑ / ↓ to step entries.
+    </div>
+
+    <div id="caughtUpWrap" class="caughtup-banner">
+      <div id="caughtUpBanner" class="banner">✅ You’re caught up. Final note: <strong id="finalStamp">(none)</strong></div>
+    </div>
+
+    <div class="meta">
+      <div style="flex:1;" class="inline-controls">
+        <div class="group" style="flex:1;min-width:320px">
+          <input id="search" class="search" placeholder="Search"/>
+          <button class="clear-btn" id="clearSearchBtn" title="Clear search">✖ Clear</button>
+          <div class="small">Entry: <span id="pos">0 / 0</span></div>
+        </div>
+        <div class="group" style="flex:1;min-width:340px">
+          <input id="resume" class="search" placeholder='Last checked (DD.MM.YYYY HH:MM:SS)' />
+          <button class="btn" id="resumeBtn" title="Jump to first entry after this time">Jump ▶</button>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="btn" id="prevBtn">◀ Prev</button>
+        <button class="btn" id="nextBtn">Next ▶</button>
+      </div>
+    </div>
+
+    <div class="panel entry" id="entryPanel">
+      <div class="timestamp" id="timestamp">Current Note: (none)</div>
+      <div class="name" id="name"></div>
+      <div class="coords" id="coords"></div>
+      <pre class="message" id="message">Load a logfile to begin — entries will show here one-by-one.</pre>
+      <div class="nav small">
+        <div>Keyboard: <strong>← →</strong> or <strong>↑ ↓</strong> to navigate • <strong>Home</strong>/<strong>End</strong> go to first/last (no wrap)</div>
+      </div>
+    </div>
+
+    <footer>
+      DayZRP - @Cole - Hofer Stinky
+    </footer>
+  </div>
+
+<script>
+(() => {
+  // State
+  let entries = [];
+  let filtered = null; // null => show full entries
+  let currentIndex = 0;
+
+  // Elements
+  const fileInput = document.getElementById('fileInput');
+  const chooseFileBtn = document.getElementById('chooseFileBtn');
+  const dropZone = document.getElementById('dropZone');
+  const timestampEl = document.getElementById('timestamp');
+  const nameEl = document.getElementById('name');
+  const coordsEl = document.getElementById('coords');
+  const messageEl = document.getElementById('message');
+  const posEl = document.getElementById('pos');
+  const prevBtn = document.getElementById('prevBtn');
+  const nextBtn = document.getElementById('nextBtn');
+  const searchInput = document.getElementById('search');
+  const clearSearchBtn = document.getElementById('clearSearchBtn');
+  const resumeInput = document.getElementById('resume');
+  const resumeBtn = document.getElementById('resumeBtn');
+  const caughtUpWrap = document.getElementById('caughtUpWrap');
+  const finalStampEl = document.getElementById('finalStamp');
+
+  const getActive = () => (filtered ?? entries);
+
+  // Helpers
+  function parseStamp(str) {
+    const m = /^\s*(\d{2})\.(\d{2})\.(\d{4})\s+(\d{2}):(\d{2}):(\d{2})\s*$/.exec(str);
+    if (!m) return NaN;
+    const [ , dd, mm, yyyy, HH, MM, SS ] = m.map(x => x);
+    return new Date(Date.UTC(+yyyy, +mm - 1, +dd, +HH, +MM, +SS)).getTime();
+  }
+  function stampOfEntry(en) {
+    const t = parseStamp(en.timestamp || "");
+    return Number.isNaN(t) ? -Infinity : t;
+  }
+  function clearCaughtUp() {
+    document.body.classList.remove('caught-up');
+    caughtUpWrap.classList.remove('show');
+  }
+  function setCaughtUp(finalTs) {
+    document.body.classList.add('caught-up');
+    finalStampEl.textContent = finalTs || '(no timestamp)';
+    caughtUpWrap.classList.add('show');
+  }
+  function jumpAfterStamp(inputStr) {
+    if (!entries.length) return alert('Load a logfile first.');
+    const target = parseStamp(inputStr);
+    if (Number.isNaN(target)) return alert('Invalid format. Use DD.MM.YYYY HH:MM:SS');
+    let idx = entries.findIndex(en => stampOfEntry(en) > target);
+    if (idx < 0) idx = entries.length - 1;
+    filtered = null;
+    searchInput.value = '';
+    showEntry(idx);
+  }
+
+  // UI wiring
+  chooseFileBtn.addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', e => {
+    if (e.target.files && e.target.files[0]) handleFile(e.target.files[0]);
+  });
+
+  // Drag & drop
+  dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag'); });
+  dropZone.addEventListener('dragleave', e => { e.preventDefault(); dropZone.classList.remove('drag'); });
+  dropZone.addEventListener('drop', e => {
+    e.preventDefault(); dropZone.classList.remove('drag');
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
+  });
+
+  prevBtn.addEventListener('click', () => {
+    const active = getActive();
+    if (!active.length) return;
+    showEntry(Math.max(0, currentIndex - 1));
+  });
+  nextBtn.addEventListener('click', () => {
+    const active = getActive();
+    if (!active.length) return;
+    showEntry(currentIndex + 1); // showEntry handles clamping + caught-up
+  });
+
+  // Filtering search
+  searchInput.addEventListener('input', () => {
+    const q = searchInput.value.trim().toLowerCase();
+    if (!q) {
+      filtered = null;
+      showEntry(0);
+      return;
+    }
+    filtered = entries.filter(en =>
+      ((en.name && en.name.toLowerCase().includes(q)) ||
+       (en.message && en.message.toLowerCase().includes(q)))
+    );
+    showEntry(0);
+  });
+
+  clearSearchBtn.addEventListener('click', () => {
+    if (!searchInput.value && !filtered) return;
+    searchInput.value = '';
+    filtered = null;
+    showEntry(0);
+  });
+
+  // Resume (jump) controls
+  resumeBtn.addEventListener('click', () => jumpAfterStamp(resumeInput.value));
+  resumeInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      jumpAfterStamp(resumeInput.value);
+    }
+  });
+
+  // Keyboard navigation (no wrap)
+  document.addEventListener('keydown', e => {
+    const active = getActive();
+    if (!active.length) return;
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { e.preventDefault(); showEntry(currentIndex + 1); }
+    if (e.key === 'ArrowLeft'  || e.key === 'ArrowUp')   { e.preventDefault(); showEntry(Math.max(0, currentIndex - 1)); }
+    if (e.key === 'Home') { e.preventDefault(); showEntry(0); }
+    if (e.key === 'End')  { e.preventDefault(); showEntry(active.length - 1); }
+  });
+
+  // File handler
+  function handleFile(file) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      parseLog(String(reader.result || ''));
+      filtered = null;
+      searchInput.value = '';
+      showEntry(0);
+    };
+    reader.onerror = () => alert('Failed to read file');
+    reader.readAsText(file);
+  }
+
+  // Parser
+  function parseLog(text) {
+    entries = [];
+    const chunks = text
+      .split(/(?=\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}:\d{2} \| )/g)
+      .map(c => c.trim())
+      .filter(Boolean);
+
+    const regex = /^(\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}:\d{2})\s*\|\s*(.*?)\s*\((.*?)\)\s*@\s*<([^>]+)>\s*wrote:\s*([\s\S]*)$/;
+
+    for (const c of chunks) {
+      const m = c.match(regex);
+      if (m) {
+        entries.push({
+          timestamp: m[1].trim(),
+          name: m[2].trim(),
+          hash: m[3].trim(),
+          coords: m[4].trim(),
+          message: m[5].trim()
+        });
+      } else {
+        entries.push({ timestamp:'', name:'', hash:'', coords:'', message:c });
+      }
+    }
+  }
+
+  function showEntry(i) {
+    const active = getActive();
+
+    if (!active.length) {
+      timestampEl.innerHTML = 'Current Note: <strong>(none)</strong>';
+      nameEl.textContent = '';
+      coordsEl.textContent = '';
+      messageEl.textContent = searchInput.value.trim()
+        ? 'No matches for current search. Clear or try a different keyword.'
+        : 'Load a logfile to begin — entries will show here one-by-one.';
+      posEl.textContent = '0 / 0';
+      clearCaughtUp();
+      currentIndex = 0;
+      return;
+    }
+
+    // Clamp index (no wrap)
+    const lastIdx = active.length - 1;
+    const clamped = Math.min(Math.max(0, i), lastIdx);
+    currentIndex = clamped;
+
+    const e = active[currentIndex];
+    const ts = e.timestamp || '(no timestamp)';
+    timestampEl.innerHTML = 'Current Note: <strong>' + ts + '</strong>';
+    nameEl.textContent = e.name || '(unknown)';
+    coordsEl.textContent = e.coords ? `<${e.coords}>` : '';
+    messageEl.textContent = e.message || '';
+    posEl.textContent = (currentIndex + 1) + ' / ' + active.length;
+
+    // 👉 Trigger caught-up **when you land on the last entry**
+    if (currentIndex === lastIdx) {
+      setCaughtUp(active[lastIdx]?.timestamp || '(no timestamp)');
+    } else {
+      clearCaughtUp();
+    }
+  }
+
+  // expose for debugging if needed
+  window._logViewer = {
+    parseLog,
+    showEntry,
+    get entries(){ return entries; },
+    get filtered(){ return filtered; },
+    jumpAfterStamp
+  };
+})();
+</script>
+</body>
+</html>
