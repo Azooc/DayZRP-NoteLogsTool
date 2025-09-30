@@ -4,7 +4,6 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>Note Log Viewer</title>
-  
 <style>
   :root{--bg:#0f1720;--panel:#0b1220;--muted:#9aa4b2;--accent:#7dd3fc;--ok:#0f3}
   html,body{height:100%;margin:0;font-family:Inter,ui-sans-serif,system-ui,Segoe UI,Roboto,"Helvetica Neue",Arial}
@@ -40,7 +39,6 @@
     .inline-controls{flex-direction:column;align-items:stretch}
   }
 </style>
-  
 </head>
 <body>
   <div class="wrap">
@@ -95,12 +93,11 @@
 
 <script>
 (() => {
-  // State
   let entries = [];
-  let filtered = null; // null => show full entries
+  let filtered = null;
   let currentIndex = 0;
+  let isCaughtUp = false;
 
-  // Elements
   const fileInput = document.getElementById('fileInput');
   const chooseFileBtn = document.getElementById('chooseFileBtn');
   const dropZone = document.getElementById('dropZone');
@@ -120,26 +117,32 @@
 
   const getActive = () => (filtered ?? entries);
 
-  // Helpers
   function parseStamp(str) {
     const m = /^\s*(\d{2})\.(\d{2})\.(\d{4})\s+(\d{2}):(\d{2}):(\d{2})\s*$/.exec(str);
     if (!m) return NaN;
     const [ , dd, mm, yyyy, HH, MM, SS ] = m.map(x => x);
-    return new Date(Date.UTC(+yyyy, +mm - 1, +dd, +HH, +MM, +SS)).getTime();
+    const date = new Date(Date.UTC(+yyyy, +mm - 1, +dd, +HH, +MM, +SS));
+    return date.getTime();
   }
+
   function stampOfEntry(en) {
     const t = parseStamp(en.timestamp || "");
     return Number.isNaN(t) ? -Infinity : t;
   }
+
   function clearCaughtUp() {
+    isCaughtUp = false;
     document.body.classList.remove('caught-up');
     caughtUpWrap.classList.remove('show');
   }
+
   function setCaughtUp(finalTs) {
+    isCaughtUp = true;
     document.body.classList.add('caught-up');
     finalStampEl.textContent = finalTs || '(no timestamp)';
     caughtUpWrap.classList.add('show');
   }
+
   function jumpAfterStamp(inputStr) {
     if (!entries.length) return alert('Load a logfile first.');
     const target = parseStamp(inputStr);
@@ -148,16 +151,19 @@
     if (idx < 0) idx = entries.length - 1;
     filtered = null;
     searchInput.value = '';
+    clearCaughtUp();
     showEntry(idx);
   }
 
-  // UI wiring
+  function isLastFullEntry(entry) {
+    return entries.length > 0 && entry === entries[entries.length - 1];
+  }
+
   chooseFileBtn.addEventListener('click', () => fileInput.click());
   fileInput.addEventListener('change', e => {
     if (e.target.files && e.target.files[0]) handleFile(e.target.files[0]);
   });
 
-  // Drag & drop
   dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag'); });
   dropZone.addEventListener('dragleave', e => { e.preventDefault(); dropZone.classList.remove('drag'); });
   dropZone.addEventListener('drop', e => {
@@ -168,37 +174,49 @@
   prevBtn.addEventListener('click', () => {
     const active = getActive();
     if (!active.length) return;
-    showEntry(Math.max(0, currentIndex - 1));
+    const nextIdx = Math.max(0, currentIndex - 1);
+    clearCaughtUp();
+    showEntry(nextIdx);
   });
+
   nextBtn.addEventListener('click', () => {
     const active = getActive();
     if (!active.length) return;
-    showEntry(currentIndex + 1); // showEntry handles clamping + caught-up
+    const lastIdx = active.length - 1;
+    if (currentIndex >= lastIdx) {
+      showEntry(lastIdx);
+      return;
+    }
+    clearCaughtUp();
+    showEntry(currentIndex + 1);
   });
 
-  // Filtering search
   searchInput.addEventListener('input', () => {
     const q = searchInput.value.trim().toLowerCase();
+    clearCaughtUp();
     if (!q) {
       filtered = null;
-      showEntry(0);
+      currentIndex = 0;
+      showEntry(currentIndex);
       return;
     }
     filtered = entries.filter(en =>
       ((en.name && en.name.toLowerCase().includes(q)) ||
        (en.message && en.message.toLowerCase().includes(q)))
     );
-    showEntry(0);
+    currentIndex = 0;
+    showEntry(currentIndex);
   });
 
   clearSearchBtn.addEventListener('click', () => {
     if (!searchInput.value && !filtered) return;
     searchInput.value = '';
     filtered = null;
-    showEntry(0);
+    currentIndex = 0;
+    clearCaughtUp();
+    showEntry(currentIndex);
   });
 
-  // Resume (jump) controls
   resumeBtn.addEventListener('click', () => jumpAfterStamp(resumeInput.value));
   resumeInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
@@ -207,39 +225,56 @@
     }
   });
 
-  // Keyboard navigation (no wrap)
   document.addEventListener('keydown', e => {
     const active = getActive();
     if (!active.length) return;
-    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { e.preventDefault(); showEntry(currentIndex + 1); }
-    if (e.key === 'ArrowLeft'  || e.key === 'ArrowUp')   { e.preventDefault(); showEntry(Math.max(0, currentIndex - 1)); }
-    if (e.key === 'Home') { e.preventDefault(); showEntry(0); }
-    if (e.key === 'End')  { e.preventDefault(); showEntry(active.length - 1); }
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      const lastIdx = active.length - 1;
+      if (currentIndex >= lastIdx) {
+        showEntry(lastIdx);
+      } else {
+        clearCaughtUp();
+        showEntry(currentIndex + 1);
+      }
+    }
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      clearCaughtUp();
+      showEntry(Math.max(0, currentIndex - 1));
+    }
+    if (e.key === 'Home') { e.preventDefault(); clearCaughtUp(); showEntry(0); }
+    if (e.key === 'End')  { e.preventDefault(); clearCaughtUp(); showEntry(active.length - 1); }
   });
 
-  // File handler
   function handleFile(file) {
     const reader = new FileReader();
     reader.onload = () => {
       parseLog(String(reader.result || ''));
       filtered = null;
       searchInput.value = '';
+      clearCaughtUp();
+      if (!entries.length) {
+        timestampEl.textContent = 'Current Note: (none)';
+        nameEl.textContent = '';
+        coordsEl.textContent = '';
+        messageEl.textContent = 'No parsable entries found. Try another log or check formatting.';
+        posEl.textContent = '0 / 0';
+        return;
+      }
       showEntry(0);
     };
     reader.onerror = () => alert('Failed to read file');
     reader.readAsText(file);
   }
 
-  // Parser
   function parseLog(text) {
     entries = [];
     const chunks = text
       .split(/(?=\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}:\d{2} \| )/g)
       .map(c => c.trim())
       .filter(Boolean);
-
     const regex = /^(\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}:\d{2})\s*\|\s*(.*?)\s*\((.*?)\)\s*@\s*<([^>]+)>\s*wrote:\s*([\s\S]*)$/;
-
     for (const c of chunks) {
       const m = c.match(regex);
       if (m) {
@@ -251,14 +286,19 @@
           message: m[5].trim()
         });
       } else {
-        entries.push({ timestamp:'', name:'', hash:'', coords:'', message:c });
+        entries.push({
+          timestamp: '',
+          name: '',
+          hash: '',
+          coords: '',
+          message: c
+        });
       }
     }
   }
 
   function showEntry(i) {
     const active = getActive();
-
     if (!active.length) {
       timestampEl.innerHTML = 'Current Note: <strong>(none)</strong>';
       nameEl.textContent = '';
@@ -267,16 +307,10 @@
         ? 'No matches for current search. Clear or try a different keyword.'
         : 'Load a logfile to begin — entries will show here one-by-one.';
       posEl.textContent = '0 / 0';
-      clearCaughtUp();
-      currentIndex = 0;
       return;
     }
-
-    // Clamp index (no wrap)
     const lastIdx = active.length - 1;
-    const clamped = Math.min(Math.max(0, i), lastIdx);
-    currentIndex = clamped;
-
+    currentIndex = Math.min(Math.max(0, i), lastIdx);
     const e = active[currentIndex];
     const ts = e.timestamp || '(no timestamp)';
     timestampEl.innerHTML = 'Current Note: <strong>' + ts + '</strong>';
@@ -284,23 +318,12 @@
     coordsEl.textContent = e.coords ? `<${e.coords}>` : '';
     messageEl.textContent = e.message || '';
     posEl.textContent = (currentIndex + 1) + ' / ' + active.length;
-
-    // 👉 Trigger caught-up **when you land on the last entry**
-    if (currentIndex === lastIdx) {
-      setCaughtUp(active[lastIdx]?.timestamp || '(no timestamp)');
+    if (isLastFullEntry(e)) {
+      setCaughtUp(entries[entries.length - 1]?.timestamp || '(no timestamp)');
     } else {
       clearCaughtUp();
     }
   }
-
-  // expose for debugging if needed
-  window._logViewer = {
-    parseLog,
-    showEntry,
-    get entries(){ return entries; },
-    get filtered(){ return filtered; },
-    jumpAfterStamp
-  };
 })();
 </script>
 </body>
